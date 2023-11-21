@@ -1,0 +1,71 @@
+name: Deploy to ECS 
+on:
+    push:
+      branches:
+        main
+    workflow_dispatch:
+jobs: 
+    builddeploytoecs:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+        steps:
+          - name: checkout code 
+            uses:  actions/checkout@v3
+          - name: setup java and maven 
+            uses:  actions/setup-java@v3
+            with:
+                distribution: 'adopt'
+                java-version: '11' 
+          - name: package with maven
+            run:  mvn package
+          - name: Build and analyze
+            env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
+              SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+            run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=mbeng-16_web-app
+#mvn sonar:sonar -Dsonar.projectKey=xashy-web-project -Dsonar.host.url=${{secrets.SONAR_HOST_URL}} -Dsonar.token=${{secrets.SONAR_LOGIN_TOKEN}}
+          - name: upload to github packages
+            run: mvn --batch-mode deploy
+            env:
+              GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}} 
+          - name: authhenticate to aws account
+            uses: aws-actions/configure-aws-credentials@v1
+            with:
+                aws-access-key-id: ${{secrets.AWS_ACCESS_KEY}}
+                aws-secret-access-key: ${{secrets.AWS_SECRET_KEY}} 
+                aws-region: ${{secrets.AWS_REGION}}   
+                
+          - name: login to Amazon ECR
+            id: login-ecr
+            uses: aws-actions/amazon-ecr-login@v1
+          - name: Build , tag and push to ECR
+            id: build-image
+            env:
+                REGISTRY: ${{steps.login-ecr.outputs.registry}}  
+                REPOSITORY: mbeng_repo
+                IMAGE_TAG: ${{github.sha}}
+                
+            run: |
+              docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG . 
+              docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+              echo "image=$REGISTRY/$REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT 
+
+          - name: Deploy a new revision of the task-definition
+            id: task-def
+            uses: aws-actions/amazon-ecs-render-task-definition@v1
+            with: 
+                task-definition: task-definition.json 
+                container-name: my-image
+                image:  ${{ steps.build-image.outputs.image }}
+
+          - name: Deploy Amazon ECS task definition
+            uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+            with:
+                  task-definition: ${{ steps.task-def.outputs.task-definition }}
+                  service: my-service
+                  cluster: mbeng-cluster
+                  wait-for-service-stability: true      
+               
+ ###  This the end of the file ###
